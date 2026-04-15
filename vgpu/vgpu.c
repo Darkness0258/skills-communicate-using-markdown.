@@ -38,6 +38,7 @@
 #include "vgpu.h"
 
 #include <assert.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,7 +50,7 @@ typedef struct thread_task {
     vgpu_thread_ctx   ctx;           /* fully populated before enqueue      */
 
     /* Per-block completion bookkeeping (shared among all tasks in a block) */
-    int              *done_count;    /* decremented when kernel returns      */
+    atomic_int       *done_count;    /* decremented atomically when kernel returns */
     int               block_total;  /* == block_size; signals when 0        */
     pthread_mutex_t  *done_mutex;
     pthread_cond_t   *done_cond;
@@ -125,7 +126,7 @@ static void *pool_worker(void *arg)
 
         /* Signal block completion */
         pthread_mutex_lock(t->done_mutex);
-        int remaining = --(*t->done_count);
+        int remaining = atomic_fetch_sub(t->done_count, 1) - 1;
         if (remaining == 0)
             pthread_cond_signal(t->done_cond);
         pthread_mutex_unlock(t->done_mutex);
@@ -157,8 +158,11 @@ static void execute_block(vgpu_device *dev, block_work *w)
     pthread_barrier_t barrier;
     pthread_barrier_init(&barrier, NULL, (unsigned)total);
 
-    /* Per-block completion tracking (stack-allocated; valid until wait exits) */
-    int             done_count = total;
+    /* Per-block completion tracking (stack-allocated; valid until wait exits).
+     * Protected by done_mutex for the cond-var predicate; also atomic_int to
+     * make the synchronization intent explicit and prevent compiler reordering. */
+    atomic_int      done_count;
+    atomic_init(&done_count, total);
     pthread_mutex_t done_mutex = PTHREAD_MUTEX_INITIALIZER;
     pthread_cond_t  done_cond  = PTHREAD_COND_INITIALIZER;
 
@@ -195,7 +199,7 @@ static void execute_block(vgpu_device *dev, block_work *w)
 
     /* Wait for every logical thread in this block to complete */
     pthread_mutex_lock(&done_mutex);
-    while (done_count > 0)
+    while (atomic_load(&done_count) > 0)
         pthread_cond_wait(&done_cond, &done_mutex);
     pthread_mutex_unlock(&done_mutex);
 
@@ -311,7 +315,10 @@ void vgpu_destroy(vgpu_device *dev)
 void *vgpu_malloc(size_t size)
 {
     void *p = malloc(size);
-    assert(p != NULL);
+    if (!p) {
+        fprintf(stderr, "[vGPU] vgpu_malloc: failed to allocate %zu bytes\n", size);
+        abort();
+    }
     return p;
 }
 

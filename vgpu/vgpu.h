@@ -107,8 +107,10 @@ void  vgpu_memcpy_d2h(void *dst, const void *src, size_t n);
  * @param grid_dim         Number of blocks in each dimension.
  * @param block_dim        Number of threads per block in each dimension.
  * @param shared_mem_bytes Bytes of per-block shared memory (zero-initialised).
- * @param args             NULL-terminated-style pointer array passed to the kernel
- *                         via ctx->args.  Must remain valid until vgpu_sync().
+ * @param args             Pointer array of arguments passed to the kernel via
+ *                         ctx->args[].  The length and types of each element are
+ *                         kernel-defined; the array must remain valid until
+ *                         vgpu_sync() returns.
  */
 void vgpu_launch(vgpu_device    *dev,
                  vgpu_kernel_fn  kernel,
